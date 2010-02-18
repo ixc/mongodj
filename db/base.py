@@ -1,10 +1,11 @@
-import pymongo as Database
+import pymongo
 
 from django.db.backends import BaseDatabaseFeatures, \
                                BaseDatabaseWrapper, \
                                BaseDatabaseClient, \
                                BaseDatabaseValidation, \
                                BaseDatabaseIntrospection
+from django.core.exceptions import ImproperlyConfigured
 
 from .creation import DatabaseCreation
 from .operations import DatabaseOperations
@@ -26,14 +27,33 @@ class DatabaseIntrospection(BaseDatabaseIntrospection):
         Show defined models
         """
         return self.django_table_names()
-
-class FakeCursor(object):
-    def __getattribute__(self, name):
-        raise NotImplementedError("The MongoDB backend doesn't support cursors.")
-
-    def __setattr__(self, name, value):
-        raise NotImplementedError("The MongoDB backend doesn't support cursors.")
-
+        
+class CursorWrapper():
+    """
+    Connection is essentially a cursor in mongoDB.
+    Let's imitate the methods cursor has
+    """
+    def __init__(self, conn, NAME):
+        self.conn = conn
+        self.db_name = NAME
+        self.db = conn[NAME]
+        
+        
+    def commit(self, *args, **kw):
+        # TODO
+        return True
+        
+    def close(self):
+        # TODO
+        # how to close the damn things?
+        # or do we need to?
+        pass
+    
+    def __getattr__(self, attr):
+        if not attr in self.__dict__:
+            return getattr(self.db, attr)
+        self.__dict__[attr]
+        
 class DatabaseWrapper(BaseDatabaseWrapper):
     def __init__(self, *args, **kwds):
         super(DatabaseWrapper, self).__init__(*args, **kwds)
@@ -45,29 +65,24 @@ class DatabaseWrapper(BaseDatabaseWrapper):
         self.introspection = DatabaseIntrospection(self)
 
     def _cursor(self):
-        if not self.connection:
+        if self.connection is None:
             settings_dict = self.settings_dict
            
             NAME = settings_dict["NAME"]
-            
             HOST = settings_dict["HOST"]
-            PORT = settings_dict["PORT"]
+            try:
+                PORT = int(settings_dict["PORT"])
+            except ValueError:
+                raise ImproperlyConfigured("PORT must be an integer, or a string which is easily convertable to an integer")
             
             USER = settings_dict["USER"]
             PASSWORD = settings_dict["PASSWORD"]
-            
-            conn = Connection(HOST, PORT) 
+            conn = pymongo.Connection(HOST, PORT) 
             
             if USER and PASSWORD:
                 auth = conn['admin'].authenticate(USER, PASSWORD)
                 if not auth:
                     raise ImproperlyConfigured("Username and/or password for the mongoDB are not correct")
             
-            db = conn[NAME]
-            
-            # TODO - do we need namespace injectors?
-            #db.add_son_manipulator(NamespaceInjector()) # inject _ns
-            #db.add_son_manipulator(AutoReference(db))
-            
-            self.connection = db
+            self.connection = CursorWrapper(conn, NAME)
         return self.connection
