@@ -46,28 +46,26 @@ def db2python(db_type, value):
     }
     return _get_mapping(db_type, value, mapping)
     
+
+def _parse_constraint(where_child, connection):
+    def _normalize_lookup_value(value, annotation, lookup_type):
+        # TODO...
+        # Django fields always return a list (see Field.get_db_prep_lookup)
+        # except if get_db_prep_lookup got overridden by a subclass
+        if lookup_type not in ('in', 'range') and isinstance(value, (tuple, list)):
+            if len(value) > 1:
+                # TODO... - when can we get here?
+                raise Exception("blah!")
+            elif lookup_type == 'isnull':
+                value = annotation
+            else:
+                value = value[0]
+        return value
     
-def _normalize_lookup_value(value, annotation, lookup_type):
-    # TODO...
-    # Django fields always return a list (see Field.get_db_prep_lookup)
-    # except if get_db_prep_lookup got overridden by a subclass
-    if lookup_type not in ('in', 'range') and isinstance(value, (tuple, list)):
-        if len(value) > 1:
-            raise DatabaseError('Filter lookup type was: %s. Expected the '
-                            'filters value not to be a list. Only "in"-filters '
-                            'can be used with lists.'
-                            % lookup_type)
-        elif lookup_type == 'isnull':
-            value = annotation
-        else:
-            value = value[0]
-
-    if isinstance(value, unicode):
-        value = unicode(value)
-    elif isinstance(value, str):
-        value = str(value)
-
-    return value
+    _constraint, lookup_type, _annotation, value = where_child
+    (table_alias, column, db_type), value = _constraint.process(lookup_type, value, connection)
+    value = _normalize_lookup_value(value, _annotation, lookup_type)
+    return (lookup_type, table_alias, column, db_type, value)
 
 class SQLCompiler(SQLCompiler):
     """
@@ -91,32 +89,27 @@ class SQLCompiler(SQLCompiler):
         pass
     
     def get_results(self):
-        # TODO - limits
-        
         # TODO - OR queries
-        # TODO - limits
-        query = {}
-        
+        query = {}        
         where = self.query.where
         if where.connector == OR:
             raise NotImplementedError("OR- queries not supported yet")
        
-        if len(where.children) == 0:
-            # all results in the table
-            return self.cursor()[self.query.model._meta.db_table].find()
-            
+        collection = self.query.model._meta.db_table
+        
         for child in where.children:
             if isinstance(child, tuple):
                 # only one level of hierarchy for now
                 # TODO - proper way, but for now - since there are no joins "table_alias" should be the same as the table name
                 
-                # TODO - hide that ugly boilerplate somewhere
-                _constraint, lookup_type, _annotation, value = child
-                (table_alias, column, db_type), value = _constraint.process(lookup_type, value, self.connection)
-                value = _normalize_lookup_value(value, _annotation, lookup_type)
-                
+                lookup_type, collection, column, db_type, value = _parse_constraint(child, self.connection)
                 query[column] = OPERATORS_MAP[lookup_type](python2db(db_type, value))
-        return self.cursor()[table_alias].find(query)
+             
+        
+        _high_limit = self.query.high_mark or 0
+        _low_limit = self.query.low_mark or 0
+        
+        return self.cursor()[collection].find(query).skip(_low_limit).limit(_high_limit - _low_limit)
 
     def results_iter(self):
         """
