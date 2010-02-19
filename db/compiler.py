@@ -2,6 +2,7 @@ import datetime
 import sys
 
 import pymongo
+from pymongo.objectid import ObjectId
 
 from django.db.models.sql.compiler import SQLCompiler
 from django.db.models.sql import aggregates as sqlaggregates
@@ -18,12 +19,55 @@ TYPE_MAPPING = {
     "float":    lambda val: float(val),
 }
 
+OPERATORS_MAP = {
+    'exact':    lambda val: val,
+    'gt':       lambda val: {"$gt": val},
+    'gte':      lambda val: {"$gte": val},
+    'lt':       lambda val: {"$lt": val},
+    'lte':      lambda val: {"$lte": val},
+}
+
+def _get_mapping(db_type, value, mapping):
+    # TODO - comments. lotsa comments
+    _func = mapping[db_type] if db_type in mapping else TYPE_MAPPING[db_type]
+    return _func(value)
+    
+    
 def python2db(db_type, value):
-    # TODO - error checking?
-    return TYPE_MAPPING[db_type](value)
+    mapping = {
+        # TODO - get rid of dirty dirty hack
+        "objectid": lambda val: ObjectId(val),  
+    }
+    return _get_mapping(db_type, value, mapping)
     
 def db2python(db_type, value):
-    return TYPE_MAPPING[db_type](value)
+    mapping = {
+        "objectid": lambda val: val,  
+    }
+    return _get_mapping(db_type, value, mapping)
+    
+    
+def _normalize_lookup_value(value, annotation, lookup_type):
+    # TODO...
+    # Django fields always return a list (see Field.get_db_prep_lookup)
+    # except if get_db_prep_lookup got overridden by a subclass
+    if lookup_type not in ('in', 'range') and isinstance(value, (tuple, list)):
+        if len(value) > 1:
+            raise DatabaseError('Filter lookup type was: %s. Expected the '
+                            'filters value not to be a list. Only "in"-filters '
+                            'can be used with lists.'
+                            % lookup_type)
+        elif lookup_type == 'isnull':
+            value = annotation
+        else:
+            value = value[0]
+
+    if isinstance(value, unicode):
+        value = unicode(value)
+    elif isinstance(value, str):
+        value = str(value)
+
+    return value
 
 class SQLCompiler(SQLCompiler):
     """
@@ -46,6 +90,33 @@ class SQLCompiler(SQLCompiler):
         """
         pass
     
+    def get_results(self):
+        # TODO - limits
+        
+        # TODO - OR queries
+        # TODO - limits
+        query = {}
+        
+        where = self.query.where
+        if where.connector == OR:
+            raise NotImplementedError("OR- queries not supported yet")
+       
+        if len(where.children) == 0:
+            # all results in the table
+            return self.cursor()[self.query.model._meta.db_table].find()
+            
+        for child in where.children:
+            if isinstance(child, tuple):
+                # only one level of hierarchy for now
+                # TODO - proper way, but for now - since there are no joins "table_alias" should be the same as the table name
+                
+                # TODO - hide that ugly boilerplate somewhere
+                _constraint, lookup_type, _annotation, value = child
+                (table_alias, column, db_type), value = _constraint.process(lookup_type, value, self.connection)
+                value = _normalize_lookup_value(value, _annotation, lookup_type)
+                
+                query[column] = OPERATORS_MAP[lookup_type](python2db(db_type, value))
+        return self.cursor()[table_alias].find(query)
 
     def results_iter(self):
         """
@@ -54,37 +125,7 @@ class SQLCompiler(SQLCompiler):
         self.query - the query created by the ORM
         self.query.where - conditions imposed by the query
         """
-        # TODO - OR queries
-        # TODO - limits
-        query = {}
-        
-        where = self.query.where
-        if where.connector == OR:
-            raise NotImplementedError("OR- queries not supported yet")
-        
-        # testing - for now we just want this thing to work with one single child
-        if len(where.children) == 0:
-            res = self.cursor()[self.query.model._meta.db_table].find()
-            
-        else:
-            child = where.children[0]
-            constraint, lookup_type, annotation, value = child
-            (table_alias, column, db_type), value = constraint.process(lookup_type, value, self.connection)
-            # since there are no joins "table_alias" should be the same as the table name
-            # TODO
-            
-            OPERATORS_MAP = {
-                'exact':    lambda val: val,
-                'gt':       lambda val: {"$gt": val},
-                'gte':      lambda val: {"$gte": val},
-                'lt':       lambda val: {"$lt": val},
-                'lte':      lambda val: {"$lte": val},
-            }
-            query[column] = OPERATORS_MAP[lookup_type](python2db(db_type, value))
-    
-            res = self.cursor().find(query)
-            
-        for document in res:
+        for document in self.get_results():
             result = []
             for field in self.query.get_meta().local_fields:
                 result.append(db2python(field.db_type(
