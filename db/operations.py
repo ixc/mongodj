@@ -7,6 +7,9 @@ class DatabaseOperations(BaseDatabaseOperations):
         return name
 
     def value_to_db_date(self, value):
+        # TODO - take a look at date queries
+        
+        
         # value is a date here, no need to check it
         return value
 
@@ -22,4 +25,11 @@ class DatabaseOperations(BaseDatabaseOperations):
         return value
 
     def check_aggregate_support(self, aggregate):
-        raise NotImplementedError("MongoDB backend does not support aggregation")
+        """
+        This function is meant to raise exception if backend does
+        not support aggregation.
+        
+        In fact, mongo probably even has more flexible aggregation
+        support than relational DB
+        """
+        pass

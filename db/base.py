@@ -38,9 +38,9 @@ class CursorWrapper():
         self.db_name = NAME
         self.db = conn[NAME]
         
-        
     def commit(self, *args, **kw):
-        # TODO
+        # TODO - what is the state of 
+        # transaction support in mongo?
         return True
         
     def close(self):

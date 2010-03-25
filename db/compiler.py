@@ -4,6 +4,7 @@ import sys
 import pymongo
 from pymongo.objectid import ObjectId
 
+from django.db.models.sql import aggregates as sqlaggregates
 from django.db.models.sql.compiler import SQLCompiler
 from django.db.models.sql import aggregates as sqlaggregates
 from django.db.models.sql.constants import LOOKUP_SEP, MULTI, SINGLE
@@ -46,25 +47,19 @@ def db2python(db_type, value):
     }
     return _get_mapping(db_type, value, mapping)
     
-
 def _parse_constraint(where_child, connection):
-    def _normalize_lookup_value(value, annotation, lookup_type):
-        # TODO...
-        # Django fields always return a list (see Field.get_db_prep_lookup)
-        # except if get_db_prep_lookup got overridden by a subclass
-        if lookup_type not in ('in', 'range') and isinstance(value, (tuple, list)):
-            if len(value) > 1:
-                # TODO... - when can we get here?
-                raise Exception("blah!")
-            elif lookup_type == 'isnull':
-                value = annotation
-            else:
-                value = value[0]
-        return value
-    
     _constraint, lookup_type, _annotation, value = where_child
     (table_alias, column, db_type), value = _constraint.process(lookup_type, value, connection)
-    value = _normalize_lookup_value(value, _annotation, lookup_type)
+    if lookup_type not in ('in', 'range') and isinstance(value, (tuple, list)):
+        # Django fields always return a list (see Field.get_db_prep_lookup)
+        # except if get_db_prep_lookup got overridden by a subclass
+        if len(value) > 1:
+            # TODO... - when can we get here?
+            raise Exception("blah!")
+        if lookup_type == 'isnull':
+            value = annotation
+        else:
+            value = value[0]
     return (lookup_type, table_alias, column, db_type, value)
 
 class SQLCompiler(SQLCompiler):
@@ -81,12 +76,23 @@ class SQLCompiler(SQLCompiler):
         super(SQLCompiler, self).__init__(*args, **kw)
         self.cursor = self.connection._cursor
     
+    def _execute_aggregate_query(self, aggregates, result_type):
+        if len(aggregates) == 1 and isinstance(aggregates[0], sqlaggregates.Count):
+            count = self.get_count()
+        if result_type is SINGLE:
+            return [count]
+        elif result_type is MULTI:
+            return [[count]]
+    
     def execute_sql(self, result_type=MULTI):
-        # TODO
-        """
-        Apparently this method has something to do with the aggregation
-        """
-        pass
+        # let's catch aggregate call
+        aggregates = self.query.aggregate_select.values()
+        if aggregates:
+            return self._execute_aggregate_query(aggregates, result_type)
+        return
+    
+    def get_count(self):
+        return self.get_results().count()
     
     def get_results(self):
         # TODO - OR queries
@@ -104,7 +110,6 @@ class SQLCompiler(SQLCompiler):
                 
                 lookup_type, collection, column, db_type, value = _parse_constraint(child, self.connection)
                 query[column] = OPERATORS_MAP[lookup_type](python2db(db_type, value))
-             
         
         _high_limit = self.query.high_mark or 0
         _low_limit = self.query.low_mark or 0
@@ -126,10 +131,8 @@ class SQLCompiler(SQLCompiler):
             yield result
             
     def has_results(self):
-        # TODO
-        return True
+        return self.get_count() > 0
                         
-    
 class SQLInsertCompiler(SQLCompiler):
     def execute_sql(self, return_id=False):
         """
