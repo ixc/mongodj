@@ -26,13 +26,16 @@ OPERATORS_MAP = {
     'gte':      lambda val: {"$gte": val},
     'lt':       lambda val: {"$lt": val},
     'lte':      lambda val: {"$lte": val},
+    'in':       lambda val: {"$in": val}
 }
 
 def _get_mapping(db_type, value, mapping):
     # TODO - comments. lotsa comments
     _func = mapping[db_type] if db_type in mapping else TYPE_MAPPING[db_type]
+    # TODO - what if the data is represented as list on the python side?
+    if isinstance(value, list):
+        return map(_func, value)
     return _func(value)
-    
     
 def python2db(db_type, value):
     mapping = {
@@ -76,6 +79,9 @@ class SQLCompiler(SQLCompiler):
         super(SQLCompiler, self).__init__(*args, **kw)
         self.cursor = self.connection._cursor
     
+    """
+    Private API
+    """
     def _execute_aggregate_query(self, aggregates, result_type):
         if len(aggregates) == 1 and isinstance(aggregates[0], sqlaggregates.Count):
             count = self.get_count()
@@ -84,25 +90,13 @@ class SQLCompiler(SQLCompiler):
         elif result_type is MULTI:
             return [[count]]
     
-    def execute_sql(self, result_type=MULTI):
-        # let's catch aggregate call
-        aggregates = self.query.aggregate_select.values()
-        if aggregates:
-            return self._execute_aggregate_query(aggregates, result_type)
-        return
-    
-    def get_count(self):
-        return self.get_results().count()
-    
-    def get_results(self):
+    def _get_query(self):
         # TODO - OR queries
         query = {}        
         where = self.query.where
         if where.connector == OR:
             raise NotImplementedError("OR- queries not supported yet")
-       
-        collection = self.query.model._meta.db_table
-        
+               
         for child in where.children:
             if isinstance(child, tuple):
                 # only one level of hierarchy for now
@@ -111,11 +105,31 @@ class SQLCompiler(SQLCompiler):
                 lookup_type, collection, column, db_type, value = _parse_constraint(child, self.connection)
                 query[column] = OPERATORS_MAP[lookup_type](python2db(db_type, value))
         
-        _high_limit = self.query.high_mark or 0
-        _low_limit = self.query.low_mark or 0
+        return query
+    
+    def _get_collection(self):
+        _collection = self.query.model._meta.db_table
+        return self.cursor()[_collection]
         
-        return self.cursor()[collection].find(query).skip(_low_limit).limit(_high_limit - _low_limit)
+    """
+    Public API
+    """
+    def get_count(self):
+        return self.get_results().count()
+    
+    def get_results(self):
+        """
+        @returns: pymongo iterator over results
+        defined by self.query
+        """
+        _high_limit = self.query.high_mark or 0
+        _low_limit = self.query.low_mark or 0        
 
+        return self._get_collection().find(self._get_query()).skip(_low_limit).limit(_high_limit - _low_limit)
+
+    """
+    API used by Django
+    """
     def results_iter(self):
         """
         Returns an iterator over the results from executing this query.
@@ -130,6 +144,13 @@ class SQLCompiler(SQLCompiler):
                     connection=self.connection), document.get(field.column, field.default)))
             yield result
             
+    def execute_sql(self, result_type=MULTI):
+        # let's catch aggregate call
+        aggregates = self.query.aggregate_select.values()
+        if aggregates:
+            return self._execute_aggregate_query(aggregates, result_type)
+        return
+            
     def has_results(self):
         return self.get_count() > 0
                         
@@ -140,7 +161,7 @@ class SQLInsertCompiler(SQLCompiler):
         """
         dat = {}
         for (field, value), column in zip(self.query.values, self.query.columns):
-            # TODO - prettier version?
+            # TODO - prettier version? check whether it is PK?
             if column == "_id":
                 continue
             dat[column] = python2db(field.db_type(connection=self.connection), value)
@@ -151,5 +172,5 @@ class SQLUpdateCompiler(SQLCompiler):
     pass
 
 class SQLDeleteCompiler(SQLCompiler):
-    # TODO 
-    pass
+    def execute_sql(self, result_type=MULTI):
+        return self._get_collection().remove(self._get_query())
