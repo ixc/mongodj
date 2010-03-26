@@ -162,10 +162,11 @@ class SQLInsertCompiler(SQLCompiler):
         dat = {}
         for (field, value), column in zip(self.query.values, self.query.columns):
             # TODO - prettier version? check whether it is PK?
-            if column == "_id":
+            # insert
+            if column == "_id" and value == None: 
                 continue
             dat[column] = python2db(field.db_type(connection=self.connection), value)
-        self.connection._cursor()[self.query.get_meta().db_table].insert(dat)
+        self.connection._cursor()[self.query.get_meta().db_table].save(dat)
 
 class SQLUpdateCompiler(SQLCompiler):
     # TODO 
